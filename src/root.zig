@@ -12,7 +12,16 @@
 
 const std = @import("std");
 pub const Regex = @import("Regex.zig");
+pub const utils = @import("utils.zig");
+pub const isWord = utils.isWord;
+pub const isAlpha = utils.isAlpha;
+pub const isAlnum = utils.isAlnum;
+pub const isDigit = utils.isDigit;
+pub const isLower = utils.isLower;
+pub const isUpper = utils.isUpper;
+pub const isWhitespace = utils.isWhitespace;
 
 comptime {
     std.testing.refAllDeclsRecursive(Regex);
+    std.testing.refAllDeclsRecursive(utils);
 }
