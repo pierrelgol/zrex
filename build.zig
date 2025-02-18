@@ -12,7 +12,7 @@ pub fn build(b: *std.Build) void {
 
     const lib = b.addLibrary(.{
         .linkage = .static,
-        .name = "tiny-regex-zig",
+        .name = "zrex",
         .root_module = lib_mod,
     });
 
@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
 
     const lib_check = b.addLibrary(.{
         .linkage = .static,
-        .name = "tiny-regex-zig",
+        .name = "zrex",
         .root_module = lib_mod,
     });
 
