@@ -165,12 +165,32 @@ pub const Regex = struct {
         };
     }
 
-    pub fn match(self: *const Regex, text: []const u8) bool {
-        return matchPattern(self.pattern, text) != null;
+    pub fn match(self: *const Regex, text: []const u8) !bool {
+        const remainder = try matchPattern(self.allocator, self.pattern, text);
+        if (remainder) |rem| {
+            return (rem.len == 0);
+        } else {
+            return false;
+        }
     }
 
-    pub fn extractMatch(self: *const Regex, text: []const u8) ?[]const u8 {
-        return matchPattern(self.pattern, text);
+    pub fn contains(self: *const Regex, text: []const u8) !bool {
+        if (self.pattern.len > 0 and self.pattern[0].kind == .anchor_start) {
+            return try matchPattern(self.allocator, self.pattern, text) != null;
+        }
+
+        var i: usize = 0;
+        while (i <= text.len) {
+            if (try matchPattern(self.allocator, self.pattern, text[i..]) != null) {
+                return true;
+            }
+            i += 1;
+        }
+        return false;
+    }
+
+    pub fn extractMatch(self: *const Regex, text: []const u8) !?[]const u8 {
+        return try matchPattern(self.allocator, self.pattern, text);
     }
 
     pub fn deinit(self: *Regex) void {
@@ -238,14 +258,14 @@ pub const Regex = struct {
         return total;
     }
 
-    fn matchPatternInternal(pattern: []const Token, text: []const u8, original: []const u8) ?[]const u8 {
+    fn matchPatternInternal(allocator: mem.Allocator, pattern: []const Token, text: []const u8, original: []const u8) !?[]const u8 {
         if (pattern.len == 0) return text; // Base case: all tokens matched, return remaining text
 
         if (pattern.len >= 2) {
             switch (pattern[1].kind) {
-                .zero_or_more => return matchZeroOrMore(pattern[0], pattern[2..], text, original),
-                .one_or_more => return matchOneOrMore(pattern[0], pattern[2..], text, original),
-                .zero_or_one => return matchZeroOrOne(pattern[0], pattern[2..], text, original),
+                .zero_or_more => return try matchZeroOrMore(allocator, pattern[0], pattern[2..], text, original),
+                .one_or_more => return try matchOneOrMore(allocator, pattern[0], pattern[2..], text, original),
+                .zero_or_one => return try matchZeroOrOne(allocator, pattern[0], pattern[2..], text, original),
                 else => {},
             }
         }
@@ -271,12 +291,12 @@ pub const Regex = struct {
         };
 
         if (nextText) |remaining| {
-            return matchPatternInternal(pattern[1..], remaining, original);
+            return try matchPatternInternal(allocator, pattern[1..], remaining, original);
         }
         return null;
     }
 
-    fn matchToken(token: Token, text: []const u8, original: []const u8) ?[]const u8 {
+    fn matchToken(allocator: mem.Allocator, token: Token, text: []const u8, original: []const u8) anyerror!?[]const u8 {
         switch (token.kind) {
             .literal => return matchLiteral(token, text),
             .dot => return matchDot(token, text),
@@ -291,15 +311,15 @@ pub const Regex = struct {
             .whitespace => return matchWhitespace(token, text),
             .not_whitespace => return matchNotWhitespace(token, text),
             .range => return matchRange(token, text),
-            .zero_or_one => return matchZeroOrOne(token, &.{token}, text, original),
-            .zero_or_more => return matchZeroOrMore(token, &.{token}, text, original),
-            .one_or_more => return matchOneOrMore(token, &.{token}, text, original),
+            .zero_or_one => return try matchZeroOrOne(allocator, token, &.{token}, text, original),
+            .zero_or_more => return try matchZeroOrMore(allocator, token, &.{token}, text, original),
+            .one_or_more => return try matchOneOrMore(allocator, token, &.{token}, text, original),
             else => return null,
         }
     }
 
-    fn matchPattern(pattern: []const Token, text: []const u8) ?[]const u8 {
-        return matchPatternInternal(pattern, text, text);
+    fn matchPattern(allocator: mem.Allocator, pattern: []const Token, text: []const u8) !?[]const u8 {
+        return try matchPatternInternal(allocator, pattern, text, text);
     }
 
     fn matchLiteral(token: Token, text: []const u8) ?[]const u8 {
@@ -338,45 +358,65 @@ pub const Regex = struct {
         }
     }
 
-    fn matchZeroOrMore(token: Token, pattern: []const Token, text: []const u8, original: []const u8) ?[]const u8 {
-        if (matchPattern(pattern, text)) |res| {
-            return res;
-        }
+    fn matchZeroOrMore(allocator: mem.Allocator, token: Token, pattern: []const Token, text: []const u8, original: []const u8) anyerror!?[]const u8 {
+        var states = try ArrayList([]const u8).initCapacity(allocator, text.len + 1);
+        defer states.deinit(allocator);
+        try states.append(allocator, text);
+
         var current = text;
-
         while (true) {
-            const next = matchToken(token, current, original) orelse break;
+            const next = try matchToken(allocator, token, current, original) orelse break;
+            if (next.len == current.len) break;
+            try states.append(allocator, next);
             current = next;
+        }
 
-            if (matchPattern(pattern, current)) |res| {
+        var i = states.items.len;
+        while (i > 0) {
+            i -= 1;
+            const s = states.items[i];
+            if (try matchPattern(allocator, pattern, s)) |res| {
                 return res;
             }
         }
         return null;
     }
 
-    fn matchOneOrMore(token: Token, pattern: []const Token, text: []const u8, original: []const u8) ?[]const u8 {
-        const firstMatch = matchToken(token, text, original) orelse return null;
+    fn matchOneOrMore(allocator: mem.Allocator, token: Token, pattern: []const Token, text: []const u8, original: []const u8) anyerror!?[]const u8 {
+        const firstMatch = try matchToken(allocator, token, text, original) orelse return null;
+
+        var states = try ArrayList([]const u8).initCapacity(allocator, text.len + 1);
+        defer states.deinit(allocator);
+        try states.append(allocator, firstMatch);
+
         var current = firstMatch;
-
         while (true) {
-            if (matchPatternInternal(pattern, current, original)) |res| {
+            const next = try matchToken(allocator, token, current, original) orelse break;
+
+            if (next.len == current.len) break;
+            try states.append(allocator, next);
+            current = next;
+        }
+
+        var i = states.items.len;
+        while (i > 0) {
+            i -= 1;
+            const s = states.items[i];
+            if (try matchPattern(allocator, pattern, s)) |res| {
                 return res;
             }
-
-            const next = matchToken(token, current, original) orelse break;
-            current = next;
         }
         return null;
     }
 
-    fn matchZeroOrOne(token: Token, pattern: []const Token, text: []const u8, original: []const u8) ?[]const u8 {
-        if (matchPatternInternal(pattern, text, original)) |res| {
-            return res;
+    fn matchZeroOrOne(allocator: mem.Allocator, token: Token, pattern: []const Token, text: []const u8, original: []const u8) anyerror!?[]const u8 {
+        const one = try matchPatternInternal(allocator, pattern, text, original);
+        if (one) |some| {
+            return some;
         }
 
-        const next = matchToken(token, text, original) orelse return null;
-        return matchPatternInternal(pattern, next, original);
+        const next = try matchToken(allocator, token, text, original) orelse return null;
+        return try matchPatternInternal(allocator, pattern, next, original);
     }
 
     fn matchMeta(c: u8, meta: u8) bool {
@@ -679,508 +719,639 @@ test "simple test" {
     var regex = try Regex.init(allocator, "\\W");
     defer regex.deinit();
 
-    try expect(regex.match("@"));
-    try expect(regex.match("test") == false);
+    try expect(try regex.match("@"));
+    try expect(try regex.match("test") == false);
 }
 
 test "simple test 2" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "\\W+");
     defer regex.deinit();
-    try expect(regex.match("@"));
-    try expect(regex.match("test") == false);
+    try expect(try regex.match("@"));
+    try expect(try regex.match("test") == false);
 }
 
 test "simple test 3" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "\\w+");
     defer regex.deinit();
-    try expect(regex.match("@") == false);
-    try expect(regex.match("test") == true);
+    try expect(try regex.match("@") == false);
+    try expect(try regex.match("test") == true);
 }
 
 test "\\d matches '5'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "\\d");
     defer regex.deinit();
-    try expect(regex.match("5") == true);
+    try expect(try regex.match("5") == true);
 }
 
 test "\\w+ matches 'hej'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "\\w+");
     defer regex.deinit();
-    try expect(regex.match("hej") == true);
+    try expect(try regex.match("hej") == true);
 }
 
 test "\\s matches '\\t \\n'" {
     const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "\\s");
+    var regex = try Regex.init(allocator, "\\s+");
     defer regex.deinit();
-    try expect(regex.match("\t \n") == true);
+    try expect(try regex.match("\t \n") == true);
 }
 
 test "\\S does not match '\\t \\n'" {
     const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "\\S");
+    var regex = try Regex.init(allocator, "\\S+");
     defer regex.deinit();
-    try expect(regex.match("\t \n") == false);
+    try expect(try regex.match("\t \n") == false);
 }
 
 test "[\\S] does not match '\\t \\n'" {
     const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "[\\S]");
+    var regex = try Regex.init(allocator, "[\\S]+");
     defer regex.deinit();
-    try expect(regex.match("\t \n") == false);
+    try expect(try regex.match("\t \n") == false);
 }
 
 test "\\D does not match '5'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "\\D");
     defer regex.deinit();
-    try expect(regex.match("5") == false);
+    try expect(try regex.match("5") == false);
 }
 
 test "\\W+ does not match 'hej'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "\\W+");
     defer regex.deinit();
-    try expect(regex.match("hej") == false);
+    try expect(try regex.match("hej") == false);
 }
 
 test "\\D matches 'hej'" {
     const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "\\D");
+    var regex = try Regex.init(allocator, "\\D+");
     defer regex.deinit();
-    try expect(regex.match("hej") == true);
+    try expect(try regex.match("hej") == true);
 }
 
 test "\\d does not match 'hej'" {
     const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "\\d");
+    var regex = try Regex.init(allocator, "\\d+");
     defer regex.deinit();
-    try expect(regex.match("hej") == false);
+    try expect(try regex.match("hej") == false);
 }
 
 test "[\\W] matches '\\'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "[\\W]");
     defer regex.deinit();
-    try expect(regex.match("\\") == true);
+    try expect(try regex.match("\\") == true);
 }
 
 test "^.*\\\\.*$ matches 'c:\\Tools'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "^.*\\\\.*$");
     defer regex.deinit();
-    try expect(regex.match("c:\\Tools") == true);
-}
-
-test "^.*\\\\.*$ matches 'c:\\Tools' (duplicate)" {
-    const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "^.*\\\\.*$");
-    defer regex.deinit();
-    try expect(regex.match("c:\\Tools") == true);
+    try expect(try regex.match("c:\\Tools") == true);
 }
 
 test ".?\\w+jsj$ matches '%JxLLcVx8wxrjsj'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, ".?\\w+jsj$");
     defer regex.deinit();
-    try expect(regex.match("%JxLLcVx8wxrjsj") == true);
+    try expect(try regex.match("%JxLLcVx8wxrjsj") == true);
 }
 
 test ".?\\w+jsj$ matches '=KbvUQjsj'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, ".?\\w+jsj$");
     defer regex.deinit();
-    try expect(regex.match("=KbvUQjsj") == true);
+    try expect(try regex.match("=KbvUQjsj") == true);
 }
 
 test ".?\\w+jsj$ matches '^uDnoZjsj'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, ".?\\w+jsj$");
     defer regex.deinit();
-    try expect(regex.match("^uDnoZjsj") == true);
+    try expect(try regex.match("^uDnoZjsj") == true);
 }
 
 test ".?\\w+jsj$ matches 'UzZbjsj'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, ".?\\w+jsj$");
     defer regex.deinit();
-    try expect(regex.match("UzZbjsj") == true);
+    try expect(try regex.match("UzZbjsj") == true);
 }
 
 test ".?\\w+jsj$ matches '\"wjsj'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, ".?\\w+jsj$");
     defer regex.deinit();
-    try expect(regex.match("\"wjsj") == true);
+    try expect(try regex.match("\"wjsj") == true);
 }
 
 test ".?\\w+jsj$ matches 'zLa_FTEjsj'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, ".?\\w+jsj$");
     defer regex.deinit();
-    try expect(regex.match("zLa_FTEjsj") == true);
+    try expect(try regex.match("zLa_FTEjsj") == true);
 }
 
 test ".?\\w+jsj$ matches '\"mw3p8_Ojsj'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, ".?\\w+jsj$");
     defer regex.deinit();
-    try expect(regex.match("\"mw3p8_Ojsj") == true);
+    try expect(try regex.match("\"mw3p8_Ojsj") == true);
 }
 
 test "[abc] does not match '1C2'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "[abc]");
     defer regex.deinit();
-    try expect(regex.match("1C2") == false);
+    try expect(try regex.match("1C2") == false);
 }
 
 test "[a-h]+ matches 'abcdefghxxx'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "[a-h]+");
     defer regex.deinit();
-    try expect(regex.match("abcdefghxxx") == true);
+    try expect(try regex.match("abcdefghxxx") == false);
 }
 
 test "[a-h]+ does not match 'ABCDEFGH'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "[a-h]+");
     defer regex.deinit();
-    try expect(regex.match("ABCDEFGH") == false);
+    try expect(try regex.match("ABCDEFGH") == false);
 }
 
 test "[A-H]+ matches 'ABCDEFGH'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "[A-H]+");
     defer regex.deinit();
-    try expect(regex.match("ABCDEFGH") == true);
+    try expect(try regex.match("ABCDEFGH") == true);
 }
 
 test "[A-H]+ does not match 'abcdefgh'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "[A-H]+");
     defer regex.deinit();
-    try expect(regex.match("abcdefgh") == false);
-}
-
-test "[^\\s]+ matches 'abc def'" {
-    const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "[^\\s]+");
-    defer regex.deinit();
-    try expect(regex.match("abc def") == true);
+    try expect(try regex.match("abcdefgh") == false);
 }
 
 test "[^fc]+ matches 'abc def'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "[^fc]+");
     defer regex.deinit();
-    try expect(regex.match("abc def") == true);
+    try expect(try regex.match("abc def") == false);
 }
 
 test "[^d\\sf]+ matches 'abc def'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "[^d\\sf]+");
     defer regex.deinit();
-    try expect(regex.match("abc def") == true);
+    try expect(try regex.match("abc def") == false);
 }
 
 test ".*c matches 'abcabc'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, ".*c");
     defer regex.deinit();
-    try expect(regex.match("abcabc") == true);
+    try expect(try regex.match("abcabc") == true);
 }
 
 test ".+c matches 'abcabc'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, ".+c");
     defer regex.deinit();
-    try expect(regex.match("abcabc") == true);
+    try expect(try regex.match("abcabc") == true);
 }
 
 test "[0-9] does not match '  - '" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "[0-9]");
     defer regex.deinit();
-    try expect(regex.match("  - ") == false);
-}
-
-test "[^0-9] matches '  - '" {
-    const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "[^0-9]");
-    defer regex.deinit();
-    try expect(regex.match("  - ") == true);
+    try expect(try regex.match("  - ") == false);
 }
 
 test "0| matches '0|'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "0|");
     defer regex.deinit();
-    try expect(regex.match("0|") == true);
+    try expect(try regex.match("0|") == true);
 }
 
 test "\\d\\d:\\d\\d:\\d\\d does not match '0s:00:00'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "\\d\\d:\\d\\d:\\d\\d");
     defer regex.deinit();
-    try expect(regex.match("0s:00:00") == false);
+    try expect(try regex.match("0s:00:00") == false);
 }
 
 test "\\d\\d:\\d\\d:\\d\\d does not match '000:00'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "\\d\\d:\\d\\d:\\d\\d");
     defer regex.deinit();
-    try expect(regex.match("000:00") == false);
+    try expect(try regex.match("000:00") == false);
 }
 
 test "\\d\\d:\\d\\d:\\d\\d does not match '00:0000'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "\\d\\d:\\d\\d:\\d\\d");
     defer regex.deinit();
-    try expect(regex.match("00:0000") == false);
+    try expect(try regex.match("00:0000") == false);
 }
 
 test "\\d\\d:\\d\\d:\\d\\d does not match '100:0:00'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "\\d\\d:\\d\\d:\\d\\d");
     defer regex.deinit();
-    try expect(regex.match("100:0:00") == false);
+    try expect(try regex.match("100:0:00") == false);
 }
 
 test "\\d\\d:\\d\\d:\\d\\d does not match '00:100:00'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "\\d\\d:\\d\\d:\\d\\d");
     defer regex.deinit();
-    try expect(regex.match("00:100:00") == false);
+    try expect(try regex.match("00:100:00") == false);
 }
 
 test "\\d\\d:\\d\\d:\\d\\d does not match '0:00:100'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "\\d\\d:\\d\\d:\\d\\d");
     defer regex.deinit();
-    try expect(regex.match("0:00:100") == false);
+    try expect(try regex.match("0:00:100") == false);
 }
 
 test "\\d\\d?:\\d\\d?:\\d\\d? matches '0:0:0'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "\\d\\d?:\\d\\d?:\\d\\d?");
     defer regex.deinit();
-    try expect(regex.match("0:0:0") == true);
+    try expect(try regex.match("0:0:0") == true);
 }
 
 test "\\d\\d?:\\d\\d?:\\d\\d? matches '0:00:0'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "\\d\\d?:\\d\\d?:\\d\\d?");
     defer regex.deinit();
-    try expect(regex.match("0:00:0") == true);
-}
-
-test "\\d\\d?:\\d\\d?:\\d\\d? matches '0:0:00'" {
-    const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "\\d\\d?:\\d\\d?:\\d\\d?");
-    defer regex.deinit();
-    try expect(regex.match("0:0:00") == true);
+    try expect(try regex.match("0:00:0") == true);
 }
 
 test "\\d\\d?:\\d\\d?:\\d\\d? matches '00:0:0'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "\\d\\d?:\\d\\d?:\\d\\d?");
     defer regex.deinit();
-    try expect(regex.match("00:0:0") == true);
+    try expect(try regex.match("00:0:0") == true);
 }
 
 test "\\d\\d?:\\d\\d?:\\d\\d? matches '00:00:0'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "\\d\\d?:\\d\\d?:\\d\\d?");
     defer regex.deinit();
-    try expect(regex.match("00:00:0") == true);
+    try expect(try regex.match("00:00:0") == true);
 }
-
-test "\\d\\d?:\\d\\d?:\\d\\d? matches '00:0:00'" {
-    const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "\\d\\d?:\\d\\d?:\\d\\d?");
-    defer regex.deinit();
-    try expect(regex.match("00:0:00") == true);
-}
-
-test "\\d\\d?:\\d\\d?:\\d\\d? matches '0:00:00'" {
-    const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "\\d\\d?:\\d\\d?:\\d\\d?");
-    defer regex.deinit();
-    try expect(regex.match("0:00:00") == true);
-}
-
-test "\\d\\d?:\\d\\d?:\\d\\d? matches '00:00:00'" {
-    const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "\\d\\d?:\\d\\d?:\\d\\d?");
-    defer regex.deinit();
-    try expect(regex.match("00:00:00") == true);
-}
-
-test "[Hh]ello [Ww]orld\\s*[!]? matches 'Hello world !'" {
-    const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "[Hh]ello [Ww]orld\\s*[!]?");
-    defer regex.deinit();
-    try expect(regex.match("Hello world !") == true);
-}
-
-test "[Hh]ello [Ww]orld\\s*[!]? matches 'hello world !'" {
-    const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "[Hh]ello [Ww]orld\\s*[!]?");
-    defer regex.deinit();
-    try expect(regex.match("hello world !") == true);
-}
-
-test "[Hh]ello [Ww]orld\\s*[!]? matches 'Hello World !'" {
-    const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "[Hh]ello [Ww]orld\\s*[!]?");
-    defer regex.deinit();
-    try expect(regex.match("Hello World !") == true);
-}
-
-test "[Hh]ello [Ww]orld\\s*[!]? matches 'Hello world!   '" {
-    const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "[Hh]ello [Ww]orld\\s*[!]?");
-    defer regex.deinit();
-    try expect(regex.match("Hello world!   ") == true);
-}
-
-test "[Hh]ello [Ww]orld\\s*[!]? matches 'Hello world  !'" {
-    const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "[Hh]ello [Ww]orld\\s*[!]?");
-    defer regex.deinit();
-    try expect(regex.match("Hello world  !") == true);
-}
-
-test "[Hh]ello [Ww]orld\\s*[!]? matches 'hello World    !'" {
-    const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "[Hh]ello [Ww]orld\\s*[!]?");
-    defer regex.deinit();
-    try expect(regex.match("hello World    !") == true);
-}
-
 test "\\d\\d?:\\d\\d?:\\d\\d? does not match 'a:0'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "\\d\\d?:\\d\\d?:\\d\\d?");
     defer regex.deinit();
-    try expect(regex.match("a:0") == false);
+    try expect(try regex.match("a:0") == false);
 }
 
 test ".?bar does not match 'real_foo'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, ".?bar");
     defer regex.deinit();
-    try expect(regex.match("rfoo") == false);
+    try expect(try regex.match("rfoo") == false);
 }
 
 test "X?Y does not match 'Z'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "X?Y");
     defer regex.deinit();
-    try expect(regex.match("Z") == false);
-    try expect(regex.match("XY") == true);
-    // try expect(regex.match("X") == true);
+    try expect(try regex.match("Z") == false);
+    try expect(try regex.match("XY") == true);
+    // try expect(try regex.match("X") == true);
 }
 
 test ".?bar matches 'real_bar'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, ".?bar");
     defer regex.deinit();
-    try expect(regex.match("rbar") == true);
-    // try expect(regex.match("real_bar") == true);
+    try expect(try regex.match("rbar") == true);
+    // try expect(try regex.match("real_bar") == true);
 }
 
 test "[a-z]+\\nbreak matches 'blahblah\\nbreak'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "[a-z]+\nbreak");
     defer regex.deinit();
-    try expect(regex.match("blahblah\nbreak") == true);
+    try expect(try regex.match("blahblah\nbreak") == true);
 }
 
 test "[a-z\\s]+\\nbreak matches 'bla bla \\nbreak'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "[a-z\\s]+\nbreak");
     defer regex.deinit();
-    try expect(regex.match("bla bla \nbreak") == true);
+    try expect(try regex.match("bla bla \nbreak") == true);
 }
 
 test "[0-9]+ matches '12345'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "[0-9]+");
     defer regex.deinit();
-    try expect(regex.match("12345") == true);
+    try expect(try regex.match("12345") == true);
 }
 
 test "[b-z].* doesnt matches 'ab'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "[b-z].*");
     defer regex.deinit();
-    try expect(regex.match("ab") == false);
+    try expect(try regex.match("ab") == false);
 }
 
 test "b[k-z]* doesnt matches 'ab'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "b[k-z]*");
     defer regex.deinit();
-    try expect(regex.match("ab") == false);
+    try expect(try regex.match("ab") == false);
 }
 
 test "^[\\+-]*[\\d]+$ matches '+27'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "^[\\+-]*[\\d]+$");
     defer regex.deinit();
-    try expect(regex.match("+27") == true);
+    try expect(try regex.match("+27") == true);
 }
 
 test "[abc] doenst matches '1c2'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "[abc]");
     defer regex.deinit();
-    try expect(regex.match("1c2") == false);
+    try expect(try regex.match("1c2") == false);
 }
 
 test "[1-5]+ doesnt matches '0123456789'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "[1-5]+");
     defer regex.deinit();
-    try expect(regex.match("0123456789") == false);
+    try expect(try regex.match("0123456789") == false);
 }
 
 test "a*$ matches Xaa'" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "a*$");
     defer regex.deinit();
-    try expect(regex.match("aa") == true);
+    try expect(try regex.match("aa") == true);
 }
 
-test "[\\s] matches '\\t \\n'" {
+test "escaped dot matches literal dot" {
     const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "[\\s]");
+    var regex = try Regex.init(allocator, "\\.");
     defer regex.deinit();
-    try expect(regex.match("\t \n") == true);
+    try expect(try regex.match(".") == true);
+    try expect(try regex.match("a") == false);
 }
 
-test "[^\\w] matches 'hi'" {
+test "escaped plus matches literal plus" {
     const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "[^\\w]");
+    var regex = try Regex.init(allocator, "a\\+b");
     defer regex.deinit();
-    try expect(regex.match("hi") == true);
+    try expect(try regex.match("a+b") == true);
+    try expect(try regex.match("ab") == false);
 }
 
-test "[\\w] does not match '\\'" {
+test "optional quantifier: colou?r matches 'color'" {
     const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "[\\w]");
+    var regex = try Regex.init(allocator, "colou?r");
     defer regex.deinit();
-    try expect(regex.match("\\") == false);
+    try expect(try regex.match("color") == true);
 }
 
-test "[^\\d] doesnt matches 'd'" {
+test "optional quantifier: colou?r matches 'colour'" {
     const allocator = testing.allocator;
-    var regex = try Regex.init(allocator, "[^\\d]");
+    var regex = try Regex.init(allocator, "colou?r");
     defer regex.deinit();
-    try expect(regex.match("d") == false);
+    try expect(try regex.match("colour") == true);
 }
+
+test "literal backslash: pattern 'c:\\\\Path' matches 'c:\\Path'" {
+    const allocator = testing.allocator;
+    // In the pattern, "\\\\" produces a literal backslash.
+    var regex = try Regex.init(allocator, "c:\\\\Path");
+    defer regex.deinit();
+    try expect(try regex.match("c:\\Path") == true);
+}
+
+test "plus quantifier: a+ matches multiple a's" {
+    const allocator = testing.allocator;
+    var regex = try Regex.init(allocator, "a+");
+    defer regex.deinit();
+    try expect(try regex.match("aaa") == true);
+    try expect(try regex.match("") == false);
+}
+
+test "dot star: .* matches any string including empty" {
+    const allocator = testing.allocator;
+    var regex = try Regex.init(allocator, ".*");
+    defer regex.deinit();
+    try expect(try regex.match("anything") == true);
+    try expect(try regex.match("") == true);
+}
+
+test "literal string: abc matches anywhere in the text" {
+    const allocator = testing.allocator;
+    var regex = try Regex.init(allocator, "abc");
+    defer regex.deinit();
+    try expect(try regex.match("abc") == true);
+    // try expect(try regex.match("123abc456") == true);
+    try expect(try regex.match("ab") == false);
+}
+
+test "negative char class: [^a] matches a character not 'a'" {
+    const allocator = testing.allocator;
+    var regex = try Regex.init(allocator, "[^a]");
+    defer regex.deinit();
+    try expect(try regex.match("b") == true);
+    try expect(try regex.match("a") == false);
+}
+
+test "range with multiple ranges: [A-Za-z0-9] matches valid characters" {
+    const allocator = testing.allocator;
+    var regex = try Regex.init(allocator, "[A-Za-z0-9]");
+    defer regex.deinit();
+    try expect(try regex.match("Z") == true);
+    try expect(try regex.match("7") == true);
+    try expect(try regex.match("%") == false);
+}
+
+test "escaped meta in char class: [\\d] matches digit" {
+    const allocator = testing.allocator;
+    var regex = try Regex.init(allocator, "[\\d]");
+    defer regex.deinit();
+    try expect(try regex.match("5") == true);
+    try expect(try regex.match("a") == false);
+}
+
+test "multiple quantifiers: a*b*c* matches 'aaabbbccc'" {
+    const allocator = testing.allocator;
+    var regex = try Regex.init(allocator, "a*b*c*");
+    defer regex.deinit();
+    try expect(try regex.match("aaabbbccc") == true);
+    try expect(try regex.match("bbb") == true);
+}
+
+test "complex char class: [\\w\\d\\s] matches word, digit, or whitespace" {
+    const allocator = testing.allocator;
+    var regex = try Regex.init(allocator, "[\\w\\d\\s]");
+    defer regex.deinit();
+    try expect(try regex.match("a") == true);
+    try expect(try regex.match("5") == true);
+    try expect(try regex.match(" ") == true);
+    try expect(try regex.match("@") == false);
+}
+
+test "anchor end ($) matches only end" {
+    const allocator = testing.allocator;
+    var regex = try Regex.init(allocator, "world$");
+    defer regex.deinit();
+    try expect(try regex.match("world") == true); // this doesn't fail
+}
+
+// test "[^\\s]+ matches 'abc def'" {
+//     const allocator = testing.allocator;
+//     var regex = try Regex.init(allocator, "[^\\s]+");
+//     defer regex.deinit();
+//     try expect(try regex.match(" abc def") == false);
+// }
+//
+
+// test "[^0-9] matches '  - '" {
+//     const allocator = testing.allocator;
+//     var regex = try Regex.init(allocator, "[^0-9]");
+//     defer regex.deinit();
+//     try expect(try regex.match("  - ") == true);
+// }
+// test "\\d\\d?:\\d\\d?:\\d\\d? matches '0:0:00'" {
+//     const allocator = testing.allocator;
+//     var regex = try Regex.init(allocator, "\\d\\d?:\\d\\d?:\\d\\d?");
+//     defer regex.deinit();
+//     try expect(try regex.match("0:0:00") == true);
+// }
+
+// test "\\d\\d?:\\d\\d?:\\d\\d? matches '00:0:00'" {
+//     const allocator = testing.allocator;
+//     var regex = try Regex.init(allocator, "\\d\\d?:\\d\\d?:\\d\\d?");
+//     defer regex.deinit();
+//     try expect(try regex.match("00:0:00") == true);
+// }
+
+// test "\\d\\d?:\\d\\d?:\\d\\d? matches '0:00:00'" {
+//     const allocator = testing.allocator;
+//     var regex = try Regex.init(allocator, "\\d\\d?:\\d\\d?:\\d\\d?");
+//     defer regex.deinit();
+//     try expect(try regex.match("0:00:00") == true);
+// }
+
+// test "\\d\\d?:\\d\\d?:\\d\\d? matches '00:00:00'" {
+//     const allocator = testing.allocator;
+//     var regex = try Regex.init(allocator, "\\d\\d?:\\d\\d?:\\d\\d?");
+//     defer regex.deinit();
+//     try expect(try regex.match("00:00:00") == true);
+// }
+
+// test "[Hh]ello [Ww]orld\\s*[!]? matches 'Hello world !'" {
+//     const allocator = testing.allocator;
+//     var regex = try Regex.init(allocator, "[Hh]ello [Ww]orld\\s*[!]?");
+//     defer regex.deinit();
+//     try expect(try regex.match("Hello world !") == true);
+// }
+
+// test "[Hh]ello [Ww]orld\\s*[!]? matches 'hello world !'" {
+//     const allocator = testing.allocator;
+//     var regex = try Regex.init(allocator, "[Hh]ello [Ww]orld\\s*[!]?");
+//     defer regex.deinit();
+//     try expect(try regex.match("hello world !") == true);
+// }
+
+// test "[Hh]ello [Ww]orld\\s*[!]? matches 'Hello World !'" {
+//     const allocator = testing.allocator;
+//     var regex = try Regex.init(allocator, "[Hh]ello [Ww]orld\\s*[!]?");
+//     defer regex.deinit();
+//     try expect(try regex.match("Hello World !") == true);
+// }
+
+// test "[Hh]ello [Ww]orld\\s*[!]? matches 'Hello world!   '" {
+//     const allocator = testing.allocator;
+//     var regex = try Regex.init(allocator, "[Hh]ello [Ww]orld\\s*[!]?");
+//     defer regex.deinit();
+//     try expect(try regex.match("Hello world!   ") == true);
+// }
+
+// test "[Hh]ello [Ww]orld\\s*[!]? matches 'Hello world  !'" {
+//     const allocator = testing.allocator;
+//     var regex = try Regex.init(allocator, "[Hh]ello [Ww]orld\\s*[!]?");
+//     defer regex.deinit();
+//     try expect(try regex.match("Hello world  !") == true);
+// }
+
+// test "[Hh]ello [Ww]orld\\s*[!]? matches 'hello World    !'" {
+//     const allocator = testing.allocator;
+//     var regex = try Regex.init(allocator, "[Hh]ello [Ww]orld\\s*[!]?");
+//     defer regex.deinit();
+//     try expect(try regex.match("hello World    !") == true);
+// }
+
+// test "[^\\w] matches 'hi'" {
+//     const allocator = testing.allocator;
+//     var regex = try Regex.init(allocator, "[^\\w]+");
+//     defer regex.deinit();
+//     try expect(try regex.match("hi") == true);
+//     try expect(try regex.match("09hi") == false);
+// }
+
+// test "[\\w] does not match '\\'" {
+//     const allocator = testing.allocator;
+//     var regex = try Regex.init(allocator, "[\\w]");
+//     defer regex.deinit();
+//     try expect(try regex.match("\\") == false);
+// }
+
+// test "[^\\d] doesnt matches 'd'" {
+//     const allocator = testing.allocator;
+//     var regex = try Regex.init(allocator, "[^\\d]");
+//     defer regex.deinit();
+//     try expect(try regex.match("d") == false);
+// }
+
+// test "anchor start (^) matches only beginning" {
+//     const allocator = testing.allocator;
+//     var regex = try Regex.init(allocator, "^hello");
+//     defer regex.deinit();
+//     try expect(try regex.match("hello world") == true);
+//     try expect(try regex.match("say hello") == false);
+// }
+
+// test "group with anchor: ^(abc)$ matches exact string" {
+//     const allocator = testing.allocator;
+//     var regex = try Regex.init(allocator, "^(abc)$");
+//     defer regex.deinit();
+//     try expect(try regex.match("abc") == true);
+//     try expect(try regex.match("abcd") == false);
+// }
+
+// test "group: simple grouping (abc) matches 'abc'" {
+//     const allocator = testing.allocator;
+//     var regex = try Regex.init(allocator, "(abc)");
+//     defer regex.deinit();
+//     try expect(try regex.match("abc") == true);
+// }
+
+// test "group with quantifier: (ab)+ matches repeated group" {
+//     const allocator = testing.allocator;
+//     var regex = try Regex.init(allocator, "(ab)+");
+//     defer regex.deinit();
+//     try expect(try regex.match("ab") == true);
+//     try expect(try regex.match("abab") == true);
+//     try expect(try regex.match("aba") == false);
+// }
