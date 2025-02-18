@@ -169,6 +169,10 @@ pub const Regex = struct {
         return matchPattern(self.pattern, text) != null;
     }
 
+    pub fn extractMatch(self: *const Regex, text: []const u8) ?[]const u8 {
+        return matchPattern(self.pattern, text);
+    }
+
     pub fn deinit(self: *Regex) void {
         self.allocator.free(self.pattern);
     }
@@ -235,7 +239,7 @@ pub const Regex = struct {
     }
 
     fn matchPatternInternal(pattern: []const Token, text: []const u8, original: []const u8) ?[]const u8 {
-        if (pattern.len == 0) return text;
+        if (pattern.len == 0) return original;
 
         if (pattern.len >= 2) {
             switch (pattern[1].kind) {
@@ -592,6 +596,7 @@ pub const Token = struct {
 
 const testing = std.testing;
 const expect = std.testing.expect;
+const expectEqlSlice = std.testing.expectEqualSlices;
 
 test "simple test" {
     const allocator = testing.allocator;
@@ -600,13 +605,21 @@ test "simple test" {
 
     try expect(regex.match("@"));
     try expect(regex.match("test") == false);
+    try expectEqlSlice(u8, "@", regex.extractMatch("@") orelse "");
 }
 
 test "simple test 2" {
     const allocator = testing.allocator;
     var regex = try Regex.init(allocator, "\\W+");
     defer regex.deinit();
-
     try expect(regex.match("@"));
     try expect(regex.match("test") == false);
+}
+
+test "simple test 3" {
+    const allocator = testing.allocator;
+    var regex = try Regex.init(allocator, "\\w+");
+    defer regex.deinit();
+    try expect(regex.match("@") == false);
+    try expect(regex.match("test") == true);
 }
