@@ -11,7 +11,7 @@
 // ************************************************************************** //
 
 const std = @import("std");
-const Regex = @import("Regex.zig");
+pub const Regex = @import("Regex.zig");
 
 comptime {
     std.testing.refAllDeclsRecursive(Regex);
