@@ -46,6 +46,14 @@ pub fn insertAt(self: *AST, index: usize, node: Node) !void {
     self.len += 1;
 }
 
+pub fn getLastOrNull(self: *AST) ?*Node {
+    return if (self.len == 0) null else &self.nodes[self.len - 1];
+}
+
+pub fn getRemainings(self: *AST) ?[]Node {
+    return if (self.len < self.cap) self.nodes[self.len..] else null;
+}
+
 pub fn removeAt(self: *AST, index: usize) !Node {
     if (index >= self.len) {
         return error.InvalidIndex;
@@ -95,7 +103,7 @@ pub const Node = struct {
                 var first = true;
                 for (self.value.concat) |node| {
                     if (!first) try writer.print(", ", .{});
-                    try writer.print("{node}", .{node});
+                    try writer.print("{}", .{node});
                     first = false;
                 }
                 try writer.print("]", .{});
@@ -105,18 +113,19 @@ pub const Node = struct {
                 var first = true;
                 for (self.value.branch) |node| {
                     if (!first) try writer.print(" | ", .{});
-                    try writer.print("{node}", .{node});
+                    try writer.print("{}", .{node});
                     first = false;
                 }
                 try writer.print("]", .{});
             },
             .quantifier => {
                 try writer.print("Quantifier(", .{});
-                try writer.print("{node}", .{self.value.quantifier.child.*});
+                try writer.print("{}", .{self.value.quantifier.child.*});
                 try writer.print(")", .{});
                 switch (self.value.quantifier.kind) {
                     .star => try writer.print("*", .{}),
                     .plus => try writer.print("+", .{}),
+                    .dot => try writer.print(".", .{}),
                     .optional => try writer.print("?", .{}),
                 }
             },
@@ -125,7 +134,7 @@ pub const Node = struct {
                 var first = true;
                 for (self.value.group) |node| {
                     if (!first) try writer.print(" ", .{});
-                    try writer.print("{node}", .{node});
+                    try writer.print("{}", .{node});
                     first = false;
                 }
                 try writer.print(")", .{});
@@ -138,13 +147,16 @@ pub const Node = struct {
                 var first = true;
                 for (self.value.class.elements) |node| {
                     if (!first) try writer.print(", ", .{});
-                    try writer.print("{node}", .{node});
+                    try writer.print("{}", .{node});
                     first = false;
                 }
                 try writer.print("]", .{});
             },
             .posix_class => {
-                try writer.print("Posix[:{s}:]", .{self.value.posix_class});
+                try writer.print("Posix[:{s}:]", .{@tagName(self.value.posix_class)});
+            },
+            .char_class => {
+                try writer.print("'{s}'", .{@tagName(self.value.char_class)});
             },
             .range => {
                 try writer.print("Range({c}-{c})", .{ self.value.range.start, self.value.range.end });
@@ -166,6 +178,7 @@ pub const Node = struct {
         group,
         class,
         posix_class,
+        char_class,
         range,
         anchor,
     };
@@ -184,12 +197,14 @@ pub const Node = struct {
             negated: bool,
         },
         posix_class: PosixClass,
+        char_class: CharClass,
         range: Range,
         anchor: AnchorType,
     };
 };
 
 pub const QuantifierKind = enum {
+    dot,
     star,
     plus,
     optional,
@@ -218,4 +233,13 @@ pub const PosixClass = enum {
     space,
     upper,
     xdigit,
+};
+
+pub const CharClass = enum {
+    word,
+    not_word,
+    digit,
+    not_digit,
+    space,
+    not_space,
 };
