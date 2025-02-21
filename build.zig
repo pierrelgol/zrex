@@ -14,6 +14,8 @@ pub fn build(b: *std.Build) void {
         .linkage = .static,
         .name = "zrex",
         .root_module = lib_mod,
+        .use_llvm = false,
+        .use_lld = false,
     });
 
     b.installArtifact(lib);
@@ -22,6 +24,8 @@ pub fn build(b: *std.Build) void {
         .linkage = .static,
         .name = "zrex",
         .root_module = lib_mod,
+        .use_llvm = false,
+        .use_lld = false,
     });
 
     const check_step = b.step("check", "zls tooling support");

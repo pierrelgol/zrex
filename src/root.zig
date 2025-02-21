@@ -11,6 +11,8 @@
 // ************************************************************************** //
 
 const std = @import("std");
+pub const Iterator = @import("Iterator.zig");
+pub const Lexer = @import("Lexer.zig");
 pub const Regex = @import("Regex.zig");
 pub const utils = @import("utils.zig");
 pub const isWord = utils.isWord;
@@ -23,5 +25,6 @@ pub const isWhitespace = utils.isWhitespace;
 
 comptime {
     std.testing.refAllDeclsRecursive(Regex);
+    std.testing.refAllDeclsRecursive(Lexer);
     std.testing.refAllDeclsRecursive(utils);
 }
