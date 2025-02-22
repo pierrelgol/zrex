@@ -27,7 +27,12 @@ pub fn Iterator(comptime T: type) type {
             };
         }
 
-        pub fn next(self: *Self) ?T {
+        pub inline fn skip(self: *Self) bool {
+            if (self.index + 1 >= self.items.len) return false;
+            self.index += 1;
+        }
+
+        pub inline fn next(self: *Self) ?T {
             if (self.index == self.items.len) {
                 return null;
             }
@@ -35,7 +40,7 @@ pub fn Iterator(comptime T: type) type {
             return self.items[self.index];
         }
 
-        pub fn prev(self: *Self) ?T {
+        pub inline fn prev(self: *Self) ?T {
             if (self.index == 0) {
                 return null;
             }
@@ -43,25 +48,33 @@ pub fn Iterator(comptime T: type) type {
             return self.items[self.index];
         }
 
-        pub fn peek(self: *Self, forward: usize) ?T {
+        pub inline fn peek(self: *Self, forward: usize) ?T {
             if (self.index + forward >= self.items.len) {
                 return null;
             }
             return self.items[self.index + forward];
         }
 
-        pub fn save(self: *Self) void {
+        pub inline fn save(self: *Self) void {
             self.saved = self.index;
         }
 
-        pub fn restore(self: *Self) void {
+        pub inline fn restore(self: *Self) void {
             self.index = self.saved;
             self.saved = 0;
         }
 
-        pub fn reset(self: *Self) void {
+        pub inline fn reset(self: *Self) void {
             self.index = 0;
             self.saved = 0;
+        }
+
+        pub inline fn clone(self: *const Self) Self {
+            return .{
+                .items = self.items,
+                .index = self.index,
+                .saved = self.saved,
+            };
         }
     };
 }
