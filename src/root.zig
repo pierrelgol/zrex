@@ -11,6 +11,7 @@
 // ************************************************************************** //
 
 const std = @import("std");
+pub const Iterator = @import("Iterator.zig").Iterator;
 pub const utils = @import("utils.zig");
 pub const isWord = utils.isWord;
 pub const isAlpha = utils.isAlpha;
@@ -22,4 +23,5 @@ pub const isWhitespace = utils.isWhitespace;
 
 comptime {
     std.testing.refAllDeclsRecursive(utils);
+    std.testing.refAllDeclsRecursive(@import("Iterator.zig"));
 }
