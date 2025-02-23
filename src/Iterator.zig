@@ -47,7 +47,8 @@ pub fn Iterator(comptime T: type) type {
         }
 
         fn eof(self: *const Self, ahead: ?usize) bool {
-            return (self.index + ahead orelse 0) >= self.items.len;
+            const amount = ahead orelse 0;
+            return (self.index + amount) >= self.items.len;
         }
     };
 }

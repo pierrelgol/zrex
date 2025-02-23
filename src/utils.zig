@@ -166,3 +166,14 @@ test "fuzzing" {
     };
     try testing.fuzz(Context{}, Context.testOne, .{ .corpus = corpus });
 }
+
+// pub const AssertionError = error{
+//     AssertionFailed,
+// };
+
+// pub fn assert(condition: bool, comptime fmt: []const u8, args: anytype) AssertionError!void {
+//     if (!condition) {
+//         std.debug.print(fmt, args);
+//         return error.AssertionFailed;
+//     }
+// }

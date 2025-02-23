@@ -19,6 +19,7 @@ const MAX_NODES = 256;
 arena: std.heap.ArenaAllocator,
 nodes: ArrayList(Node),
 root: ?*Node = null,
+len: usize = 0,
 
 pub fn init(allocator: std.mem.Allocator) Error!Ast {
     var arena: std.heap.ArenaAllocator = .init(allocator);
@@ -33,18 +34,8 @@ pub fn getRoot(self: *const Ast) ?*Node {
     return self.root;
 }
 
-fn createNode(self: *Ast) Error!*Node {
-    const allocator = self.arena.allocator();
-    self.nodes.appendAssumeCapacity(allocator, Node{});
-    if (self.root == null) {
-        self.root = &self.nodes.getLastOrNull();
-    }
-    return &self.nodes.getLastOrNull() orelse unreachable;
-}
-
 pub fn createLeafNode(self: *Ast, kind: Node.Kind, token: ?Token) Error!*Node {
-    const new_node = try self.createNode();
-    new_node.* = switch (kind) {
+    const new_node: Node = switch (kind) {
         .literal => Node{
             .literal = .{
                 .token = token,
@@ -60,14 +51,15 @@ pub fn createLeafNode(self: *Ast, kind: Node.Kind, token: ?Token) Error!*Node {
                 .token = token,
             },
         },
-        else => error.InvalidKindForLeafNode,
+        else => return error.InvalidKindForLeafNode,
     };
-    return new_node;
+    self.nodes.appendAssumeCapacity(new_node);
+    defer self.len += 1;
+    return &self.nodes.items[self.len];
 }
 
 pub fn createUnaryNode(self: *Ast, kind: Node.Kind, token: ?Token, next: ?*Node) Error!*Node {
-    const new_node = try self.createNode();
-    new_node.* = switch (kind) {
+    const new_node: Node = switch (kind) {
         .group => Node{
             .group = .{
                 .token = token,
@@ -86,14 +78,19 @@ pub fn createUnaryNode(self: *Ast, kind: Node.Kind, token: ?Token, next: ?*Node)
                 .child = next,
             },
         },
-        else => error.InvalidKindForUnaryNode,
+        else => return error.InvalidKindForUnaryNode,
     };
-    return new_node;
+    self.nodes.appendAssumeCapacity(new_node);
+    defer self.len += 1;
+    return &self.nodes.items[self.len];
+}
+
+pub fn addChildNary(self: *Ast, nary: *NaryNode, child: *Node) Error!void {
+    try nary.children.append(self.arena.allocator(), child);
 }
 
 pub fn createBinaryNode(self: *Ast, kind: Node.Kind, token: ?Token, lhs: ?*Node, rhs: ?*Node) Error!*Node {
-    const new_node = try self.createNode();
-    new_node.* = switch (kind) {
+    const new_node: Node = switch (kind) {
         .alternation => Node{
             .alternation = .{
                 .token = token,
@@ -101,23 +98,26 @@ pub fn createBinaryNode(self: *Ast, kind: Node.Kind, token: ?Token, lhs: ?*Node,
                 .rhs = rhs,
             },
         },
-        else => error.InvalidKindForBinaryNode,
+        else => return error.InvalidKindForBinaryNode,
     };
-    return new_node;
+    self.nodes.appendAssumeCapacity(new_node);
+    defer self.len += 1;
+    return &self.nodes.items[self.len];
 }
 
 pub fn createNaryNode(self: *Ast, kind: Node.Kind, token: ?Token) Error!*Node {
-    const new_node = try self.createNode();
-    new_node.* = switch (kind) {
+    const new_node: Node = switch (kind) {
         .concatenation => Node{
             .concatenation = .{
                 .token = token,
                 .children = ArrayList(*Node).empty,
             },
         },
-        else => error.InvalidKindForBinaryNode,
+        else => return error.InvalidKindForBinaryNode,
     };
-    return new_node;
+    self.nodes.appendAssumeCapacity(new_node);
+    defer self.len += 1;
+    return &self.nodes.items[self.len];
 }
 
 pub fn deinit(self: *Ast) void {
