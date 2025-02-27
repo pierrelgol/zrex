@@ -23,7 +23,6 @@ pub const isDigit = utils.isDigit;
 pub const isLower = utils.isLower;
 pub const isUpper = utils.isUpper;
 pub const isWhitespace = utils.isWhitespace;
-// pub const assert = utils.assert;
 
 comptime {
     std.testing.refAllDeclsRecursive(utils);

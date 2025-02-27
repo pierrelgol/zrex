@@ -39,6 +39,7 @@ pub fn init(allocator: std.mem.Allocator, input: []const u8) Error!Parser {
 }
 
 pub fn deinit(self: *Parser) void {
+    self.ast.nodes.deinit(self.ast.arena.allocator());
     self.ast.deinit();
 }
 
@@ -122,4 +123,16 @@ fn parseClass(parser: *Parser, open_token: Token) Error!*AstNode {
         try parser.ast.addChildNary(&class_node.concatenation, sub_node);
     }
     return class_node;
+}
+
+test "simple" {
+    const alloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+
+    var parser = try Parser.init(arena.allocator(), "abc");
+    defer parser.deinit();
+
+    const root = try parser.parse();
+    _ = root;
 }
